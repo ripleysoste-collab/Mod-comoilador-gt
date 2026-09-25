@@ -80,6 +80,184 @@ object CleoCompiler {
     "CJ" to 0, "TRUTH" to 1, "MACER" to 2, "SMOKE" to 269, "SWEET" to 270, "KENDL" to 271, "RYDER" to 272
   )
 
+  data class SourceLine(val text: String, val originalLineNumber: Int)
+
+  private data class IfBlockFrame(
+    val id: Int,
+    val isOr: Boolean,
+    val ifLineNum: Int,
+    val conditionLines: MutableList<SourceLine> = mutableListOf(),
+    var hasElse: Boolean = false,
+    var inConditions: Boolean = true
+  )
+
+  /**
+   * Preprocesador de estructuras de control de alto nivel de Sanny Builder:
+   * Convierte bloques "if ... then ... else ... end" a opcodes 00D6 / 004D / 0002
+   * con etiquetas automáticas, permitiendo compilar código estructurado moderno.
+   */
+  fun preprocessStructuredBlocks(rawLines: List<String>): List<SourceLine> {
+    val output = mutableListOf<SourceLine>()
+    val ifStack = ArrayDeque<IfBlockFrame>()
+    var labelCounter = 1
+    var insideHexBlock = false
+
+    for ((index, rawLine) in rawLines.withIndex()) {
+      val lineNum = index + 1
+      val trimmed = rawLine.trim()
+
+      if (trimmed.isEmpty() || trimmed.startsWith("//") || trimmed.startsWith(";") || trimmed.startsWith("#")) {
+        output.add(SourceLine(rawLine, lineNum))
+        continue
+      }
+
+      val codeWithoutComments = trimmed.replace(Regex("(//|;|#).*$"), "").trim()
+      val lower = codeWithoutComments.lowercase()
+
+      if (lower == "hex") {
+        insideHexBlock = true
+        output.add(SourceLine(trimmed, lineNum))
+        continue
+      }
+      if (insideHexBlock) {
+        if (lower == "end" || lower.startsWith("end ")) {
+          insideHexBlock = false
+        }
+        output.add(SourceLine(trimmed, lineNum))
+        continue
+      }
+
+      // Detección de IF (if, if and, if or, o if <condition>)
+      val isIfKeyword = (lower == "if" || lower == "if and" || lower == "if or" ||
+        (lower.startsWith("if ") && !lower.startsWith("if 0") && !lower.startsWith("if 1") &&
+         !lower.startsWith("if 2") && !lower.startsWith("if 3") && !lower.startsWith("if 4"))) &&
+        !trimmed.contains(":")
+
+      if (isIfKeyword) {
+        val isOr = lower.contains(" or")
+        val newFrame = IfBlockFrame(
+          id = labelCounter++,
+          isOr = isOr,
+          ifLineNum = lineNum
+        )
+
+        var afterIf = codeWithoutComments.substringAfter("if").trim()
+        if (afterIf.startsWith("and ", ignoreCase = true)) {
+          afterIf = afterIf.substring(4).trim()
+        } else if (afterIf.startsWith("or ", ignoreCase = true)) {
+          afterIf = afterIf.substring(3).trim()
+        }
+
+        if (afterIf.endsWith(" then", ignoreCase = true)) {
+          val cond = afterIf.substring(0, afterIf.length - 5).trim()
+          if (cond.isNotEmpty()) {
+            newFrame.conditionLines.add(SourceLine(cond, lineNum))
+          }
+          newFrame.inConditions = false
+          ifStack.addLast(newFrame)
+
+          val condCount = newFrame.conditionLines.size
+          val param = if (condCount <= 1) 0 else if (isOr) 20 + condCount else condCount
+          output.add(SourceLine("00D6: if $param", newFrame.ifLineNum))
+          newFrame.conditionLines.forEach { output.add(it) }
+          output.add(SourceLine("004D: jump_if_false @__AUTO_ELSE_${newFrame.id}", lineNum))
+          continue
+        } else if (afterIf.isNotEmpty() && afterIf != "and" && afterIf != "or") {
+          newFrame.conditionLines.add(SourceLine(afterIf, lineNum))
+        }
+
+        ifStack.addLast(newFrame)
+        continue
+      }
+
+      // Detección de THEN
+      if (lower == "then" || lower.startsWith("then ")) {
+        val currentIf = ifStack.lastOrNull()
+        if (currentIf != null && currentIf.inConditions) {
+          currentIf.inConditions = false
+          val condCount = currentIf.conditionLines.size
+          val param = if (condCount <= 1) 0 else if (currentIf.isOr) 20 + condCount else condCount
+          output.add(SourceLine("00D6: if $param", currentIf.ifLineNum))
+          currentIf.conditionLines.forEach { output.add(it) }
+          output.add(SourceLine("004D: jump_if_false @__AUTO_ELSE_${currentIf.id}", lineNum))
+
+          val restAfterThen = codeWithoutComments.substringAfter("then").trim()
+          if (restAfterThen.isNotEmpty()) {
+            output.add(SourceLine(restAfterThen, lineNum))
+          }
+          continue
+        }
+      }
+
+      // Detección de ELSE
+      if (lower == "else" || lower.startsWith("else ")) {
+        val currentIf = ifStack.lastOrNull()
+        if (currentIf != null) {
+          currentIf.hasElse = true
+          output.add(SourceLine("0002: jump @__AUTO_END_${currentIf.id}", lineNum))
+          output.add(SourceLine(":__AUTO_ELSE_${currentIf.id}", lineNum))
+
+          val restAfterElse = codeWithoutComments.substringAfter("else").trim()
+          if (restAfterElse.isNotEmpty()) {
+            output.add(SourceLine(restAfterElse, lineNum))
+          }
+          continue
+        }
+      }
+
+      // Detección de END / ENDIF
+      if (lower == "end" || lower == "endif" || lower == "end_if") {
+        val currentIf = ifStack.removeLastOrNull()
+        if (currentIf != null) {
+          if (!currentIf.hasElse) {
+            output.add(SourceLine(":__AUTO_ELSE_${currentIf.id}", lineNum))
+          }
+          output.add(SourceLine(":__AUTO_END_${currentIf.id}", lineNum))
+          continue
+        }
+      }
+
+      // Si estamos dentro de un IF recolectando condiciones
+      val currentIf = ifStack.lastOrNull()
+      if (currentIf != null && currentIf.inConditions) {
+        if (codeWithoutComments.isNotEmpty()) {
+          currentIf.conditionLines.add(SourceLine(codeWithoutComments, lineNum))
+        }
+        continue
+      }
+
+      output.add(SourceLine(rawLine, lineNum))
+    }
+
+    while (ifStack.isNotEmpty()) {
+      val pending = ifStack.removeLast()
+      if (!pending.hasElse) {
+        output.add(SourceLine(":__AUTO_ELSE_${pending.id}", pending.ifLineNum))
+      }
+      output.add(SourceLine(":__AUTO_END_${pending.id}", pending.ifLineNum))
+    }
+
+    return output
+  }
+
+  /**
+   * Resuelve llamadas a métodos de clases OOP estilo Sanny Builder (ej: Player.Defined(0), Actor.Driving($PLAYER_ACTOR))
+   */
+  private fun resolveOopMethodCall(cleanLine: String): Pair<String, String>? {
+    val trimmed = cleanLine.trim()
+    val match = Regex("^([A-Za-z_][A-Za-z0-9_]*)\\.([A-Za-z0-9_]+)(?:\\s*\\((.*)\\)|\\s+(.*))?$").find(trimmed)
+      ?: return null
+
+    val className = match.groupValues[1]
+    val methodName = match.groupValues[2]
+    val argsInParens = match.groupValues.getOrNull(3)
+    val argsNoParens = match.groupValues.getOrNull(4)
+    val rawArgs = (argsInParens ?: argsNoParens ?: "").trim()
+
+    val oopDef = CleoOpcodeDatabase.getOopMethod(className, methodName) ?: return null
+    return Pair(oopDef.opcode, rawArgs)
+  }
+
   /**
    * Compila el código fuente en texto a bytecode ejecutable de CLEO.
    * Ejecuta en tiempo real sin pausas artificiales y mide la duración real en milisegundos.
@@ -124,23 +302,26 @@ object CleoCompiler {
     }
 
     // =========================================================================
-    // FASE 0: Parseo léxico y sintáctico línea por línea
+    // FASE 0: Preprocesamiento de estructuras de control y parseo léxico
     // =========================================================================
+    val preprocessedSourceLines = preprocessStructuredBlocks(lines)
+
     var insideHexBlock = false
     val hexBlockBytes = mutableListOf<Byte>()
 
-    lines.forEachIndexed { index, rawLine ->
-      val lineNumber = index + 1
+    preprocessedSourceLines.forEach { sourceLine ->
+      val lineNumber = sourceLine.originalLineNumber
+      val rawLine = sourceLine.text
       var clean = rawLine.trim()
 
       if (clean.isEmpty() || clean.startsWith("//") || clean.startsWith(";") || clean.startsWith("#")) {
-        return@forEachIndexed
+        return@forEach
       }
 
       // Remover comentarios inline (// o ; o #)
       clean = clean.split("//", ";").first().trim()
       if (clean.isEmpty()) {
-        return@forEachIndexed
+        return@forEach
       }
 
       // Bloques HEX..END
@@ -148,7 +329,7 @@ object CleoCompiler {
       if (lowerClean == "hex") {
         insideHexBlock = true
         hexBlockBytes.clear()
-        return@forEachIndexed
+        return@forEach
       }
       if (lowerClean == "end" && insideHexBlock) {
         insideHexBlock = false
@@ -156,7 +337,7 @@ object CleoCompiler {
           parsedItems.add(ParsedItem.RawBytes(hexBlockBytes.toByteArray(), lineNumber))
           hexBlockBytes.clear()
         }
-        return@forEachIndexed
+        return@forEach
       }
       if (insideHexBlock) {
         val tokens = clean.split(Regex("\\s+")).filter { it.isNotEmpty() }
@@ -174,7 +355,7 @@ object CleoCompiler {
           parsedItems.add(ParsedItem.RawBytes(hexBlockBytes.toByteArray(), lineNumber))
           hexBlockBytes.clear()
         }
-        return@forEachIndexed
+        return@forEach
       }
 
       // Soporte HEX inline: hex 01 02 03 end
@@ -189,13 +370,13 @@ object CleoCompiler {
         if (bytes.isNotEmpty()) {
           parsedItems.add(ParsedItem.RawBytes(bytes.toByteArray(), lineNumber))
         }
-        return@forEachIndexed
+        return@forEach
       }
 
       // Directivas del compilador Sanny Builder / CLEO (ej. {$CLEO .csa}, {$NOSAVE})
       if (clean.startsWith("{$")) {
         parsedItems.add(ParsedItem.Directive(clean, lineNumber))
-        return@forEachIndexed
+        return@forEach
       }
 
       // Comprobar si hay una etiqueta al inicio (ej. :LABEL o @LABEL o LABEL: o .LABEL)
@@ -210,7 +391,7 @@ object CleoCompiler {
         if (!candidate.matches(Regex("^[0-9A-Fa-f]{4}:?$"))) {
           parsedItems.add(ParsedItem.LabelDef(labelName, lineNumber))
           if (restAfter.isEmpty() || restAfter.startsWith("//") || restAfter.startsWith(";") || restAfter.startsWith("#")) {
-            return@forEachIndexed
+            return@forEach
           }
           clean = restAfter
         }
@@ -237,20 +418,37 @@ object CleoCompiler {
         argumentsRest = if (parts.size > 1) parts[1].trim() else ""
       } else {
         // Inteligencia estilo Sanny Builder:
-        // 1. Expresión matemática / asignación / comparación (ej. $VAR = 10, 0@ += 1, 0@ > 5)
+        // 1. Expresión matemática / asignación / comparación (ej. $VAR = 10, 0@ += 1, 0@ > 5, 1@ = Player.Stat($PLAYER_CHAR, 121))
         val sannyMathMatch = Regex("^(\\$?[A-Za-z0-9_@]+)\\s*(==|>=|<=|!=|<>|\\+=|-=|\\*=|/=|=(?!=)|>|<)\\s*(.+)$").find(clean)
         if (sannyMathMatch != null) {
           val left = sannyMathMatch.groupValues[1].trim()
           val op = sannyMathMatch.groupValues[2].trim()
           val right = sannyMathMatch.groupValues[3].trim()
-          val resolvedHex = resolveSannyMathOpcode(left, op, right)
-          if (resolvedHex != null) {
-            opcodeHex = resolvedHex
-            argumentsRest = "$left $right"
+
+          // Comprobar si el lado derecho es una llamada OOP (ej. 1@ = Player.Stat($PLAYER_CHAR, 121))
+          val rightOop = resolveOopMethodCall(right)
+          if (rightOop != null && op == "=") {
+            opcodeHex = rightOop.first
+            argumentsRest = "$left ${rightOop.second}"
+          } else {
+            val resolvedHex = resolveSannyMathOpcode(left, op, right)
+            if (resolvedHex != null) {
+              opcodeHex = resolvedHex
+              argumentsRest = "$left $right"
+            }
           }
         }
 
-        // 2. Comandos directos y palabras clave (ej. wait 0 ms, jump @LOOP, end_thread, create_player, etc.)
+        // 2. Llamada directa a método orientado a objetos estilo Sanny Builder (ej. Player.Defined(0), actor.Driving($PLAYER_ACTOR))
+        if (opcodeHex == null) {
+          val directOop = resolveOopMethodCall(clean)
+          if (directOop != null) {
+            opcodeHex = directOop.first
+            argumentsRest = directOop.second
+          }
+        }
+
+        // 3. Comandos directos y palabras clave (ej. wait 0 ms, jump @LOOP, end_thread, create_player, thread 'CARMONEY')
         if (opcodeHex == null) {
           val resolvedCmd = resolveSannyKeywordOrCommand(clean)
           if (resolvedCmd != null) {
@@ -762,15 +960,33 @@ object CleoCompiler {
     val rawTokens = processedArgs.split(Regex("[\\s,]+")).filter { it.isNotEmpty() }
     val params = mutableListOf<ScriptParam>()
 
-    val noiseWords = setOf(
-      "ms", "sec", "seconds", "to", "at", "from", "with", "in", "is", "actor", "char",
-      "car", "vehicle", "object", "player", "model", "position", "position_to", "immunities",
-      "health", "armour", "armor", "money", "add_money", "weapon", "ammo", "weather",
-      "fade", "time", "set", "get", "store", "and", "or", "not", "jump", "jump_if_false",
-      "end_thread", "create_thread", "gosub", "return", "=", "+=", "-=", "*=", "/=", "==", ">=", "<=", "<>", "!=",
-      "phrase", "can_move", "abs", "driving", "control", "key_pressed", "as_only_one_available_for_gangwars",
-      "as", "only", "one", "available", "for", "gangwars", "zone", "gang", "can", "move"
-    )
+    val noiseWords = buildSet {
+      addAll(CleoOpcodeDatabase.getAllTemplateKeywords())
+      addAll(
+        listOf(
+          "ms", "sec", "seconds", "to", "at", "from", "with", "in", "is", "actor", "char",
+          "car", "vehicle", "object", "player", "model", "position", "position_to", "immunities",
+          "health", "armour", "armor", "money", "add_money", "weapon", "ammo", "weather",
+          "fade", "time", "set", "get", "store", "and", "or", "not", "jump", "jump_if_false",
+          "end_thread", "create_thread", "gosub", "return", "=", "+=", "-=", "*=", "/=", "==", ">=", "<=", "<>", "!=",
+          "phrase", "can_move", "abs", "driving", "control", "key_pressed", "as_only_one_available_for_gangwars",
+          "as", "only", "one", "available", "for", "gangwars", "zone", "gang", "can", "move",
+          "defined", "stat", "pressed_key", "stone", "in_any_car", "style", "boxed", "text", "int", "float",
+          "now", "highpriority", "lowpriority", "help", "radius", "sphere"
+        )
+      )
+    }
+
+    // Si es opcode 00D6 (if) y no se especificaron parámetros o solo palabras de adorno, por defecto es 0 (1 condición)
+    if (cleanOpcode == 0x00D6) {
+      val nonNoise = rawTokens.filter {
+        val low = it.lowercase()
+        !noiseWords.contains(low) && low != "if"
+      }
+      if (nonNoise.isEmpty()) {
+        return ParseResult.Success(listOf(ScriptParam.IntVal(0)))
+      }
+    }
 
     val embeddedDef = CleoOpcodeDatabase.getEmbedded(cleanOpcode)
     val commandWords = mutableSetOf<String>()
@@ -1035,6 +1251,14 @@ object CleoCompiler {
       val args = cleanLine.substring(4).trim().ifEmpty { "0" }
       return Pair("0001", args)
     }
+    if (low.startsWith("thread ") || low.startsWith("thread'")) {
+      val args = cleanLine.substring(6).trim()
+      return Pair("03A4", args)
+    }
+    if (low.startsWith("name_thread ") || low.startsWith("name_thread'")) {
+      val args = cleanLine.substring(11).trim()
+      return Pair("03A4", args)
+    }
     if (low.startsWith("jump ") || low.startsWith("goto ")) {
       val args = cleanLine.split(Regex("\\s+"), limit = 2).getOrNull(1)?.trim() ?: ""
       return Pair("0002", args)
@@ -1061,10 +1285,6 @@ object CleoCompiler {
       val args = cleanLine.substring(13).trim()
       return Pair("00D7", args)
     }
-    if (low.startsWith("name_thread ")) {
-      val args = cleanLine.substring(11).trim()
-      return Pair("03A4", args)
-    }
     if (low == "nop") {
       return Pair("0000", "")
     }
@@ -1072,9 +1292,19 @@ object CleoCompiler {
       val args = cleanLine.split(Regex("\\s+"), limit = 2).getOrNull(1)?.trim() ?: ""
       return Pair("016A", args)
     }
+    if (low == "restore_camera" || low == "restore_camera()") {
+      return Pair("015D", "")
+    }
+
+    // Comprobación por nombre en base de datos de comandos (keywords_database.json)
+    val firstWord = cleanLine.split(Regex("[\\s(]+"), limit = 2)[0]
+    val cmdHex = CleoOpcodeDatabase.getCommandOpcode(firstWord)
+    if (cmdHex != null) {
+      val rest = cleanLine.substring(firstWord.length).trim()
+      return Pair(cmdHex, rest)
+    }
 
     // Comprobación por nombre de comando oficial/personalizado (ej. create_player, show_text_box, name_thread)
-    val firstWord = cleanLine.split(Regex("\\s+"), limit = 2)[0]
     val cmdDef = CleoOpcodeDatabase.findByName(firstWord)
     if (cmdDef != null) {
       val rest = cleanLine.substring(firstWord.length).trim()
