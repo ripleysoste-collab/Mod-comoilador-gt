@@ -34,16 +34,7 @@ data class OpcodeDef(
 )
 
 /**
- * Definición de método orientado a objetos estilo Sanny Builder (Player.Defined, Actor.Driving).
- */
-data class OopMethodDef(
-  val opcode: String,
-  val desc: String = "",
-  val args: List<String> = emptyList()
-)
-
-/**
- * Base de datos de opcodes y palabras clave.
+ * Base de datos de opcodes.
  * Mantiene separados los opcodes oficiales de los opcodes personalizados del usuario.
  */
 object CleoOpcodeDatabase {
@@ -52,30 +43,10 @@ object CleoOpcodeDatabase {
   private val customOpcodes = mutableMapOf<Int, OpcodeDef>()
   private val embeddedOpcodes = mutableMapOf<Int, OpcodeDef>()
 
-  // Diccionarios de palabras clave estilo Sanny Builder
-  private val commandsMap = mutableMapOf<String, String>()
-  private val oopMethodsMap = mutableMapOf<String, MutableMap<String, OopMethodDef>>()
-  private val templateKeywordsSet = mutableSetOf<String>()
-
   init {
     loadEmbeddedOpcodes()
-    loadEmbeddedKeywords()
     tryAutoLoadJson()
-    tryAutoLoadKeywordsJson()
   }
-
-  fun getCommandOpcode(command: String): String? = commandsMap[command.lowercase().trim()]
-
-  fun getOopMethod(className: String, methodName: String): OopMethodDef? {
-    val cleanClass = className.lowercase().trim()
-    val cleanMethod = methodName.lowercase().trim()
-    return oopMethodsMap[cleanClass]?.get(cleanMethod)
-  }
-
-  fun isTemplateKeyword(word: String): Boolean =
-    templateKeywordsSet.contains(word.lowercase().trim())
-
-  fun getAllTemplateKeywords(): Set<String> = templateKeywordsSet
 
   fun getEmbedded(opcode: Int): OpcodeDef? = embeddedOpcodes[opcode]
 
@@ -244,17 +215,6 @@ object CleoOpcodeDatabase {
       if (loaded == 0) {
         loaded = loadFromAssets(context)
       }
-
-      try {
-        val kwExtFile = extDir?.let { File(it, "keywords_database.json") }
-        if (kwExtFile != null && kwExtFile.exists()) {
-          loadKeywordsFromJsonString(kwExtFile.readText(Charsets.UTF_8))
-        } else {
-          context.assets.open("keywords_database.json").bufferedReader(Charsets.UTF_8).use {
-            loadKeywordsFromJsonString(it.readText())
-          }
-        }
-      } catch (_: Exception) {}
 
       loadCustomFromStorage(context)
       return loaded
@@ -664,193 +624,11 @@ object CleoOpcodeDatabase {
       OpcodeDef(0x0611, "0611", "task_hands_up", "Obliga al actor a levantar las manos en señal de rendición", 2, 2, emptyList(), "0611: task_hands_up \$ACTOR 5000 ms", "Tareas de Peds"),
       OpcodeDef(0x0643, "0643", "task_leave_vehicle", "Ordena al personaje salir del vehículo en el que se encuentra", 1, 1, emptyList(), "0643: task_leave_vehicle \$ACTOR", "Tareas de Peds"),
       OpcodeDef(0x0672, "0672", "task_kill_char_on_foot", "Ordena al personaje atacar y eliminar a otro personaje a pie", 2, 2, emptyList(), "0672: task_kill_char_on_foot \$ACTOR \$TARGET", "Tareas de Peds"),
-      OpcodeDef(0x06E5, "06E5", "task_die", "Fuerza la muerte con animación inmediata del personaje", 1, 1, emptyList(), "06E5: task_die \$ACTOR", "Tareas de Peds"),
-      // Sanny Builder & Opcodes de alta frecuencia de GTA SA
-      OpcodeDef(0x00D6, "00D6", "if", "Evalúa una o varias condiciones para saltos lógicos", 0, 1, emptyList(), "00D6: if 0", "Control de Flujo"),
-      OpcodeDef(0x0256, "0256", "is_player_playing", "Comprueba si el jugador está vivo y en partida (Player.Defined)", 1, 1, emptyList(), "0256: is_player_playing 0", "Jugador"),
-      OpcodeDef(0x056D, "056D", "is_char_defined", "Comprueba si un ped/actor existe y es válido (Actor.Defined)", 1, 1, emptyList(), "056D: actor 0@ defined", "Peds & Pandillas"),
-      OpcodeDef(0x056E, "056E", "is_car_defined", "Comprueba si un vehículo existe y es válido (Car.Defined)", 1, 1, emptyList(), "056E: car 0@ defined", "Vehículos"),
-      OpcodeDef(0x00DF, "00DF", "is_char_in_any_car", "Comprueba si el actor está conduciendo un vehículo", 1, 1, emptyList(), "00DF: actor \$PLAYER_ACTOR driving", "Vehículos"),
-      OpcodeDef(0x0205, "0205", "is_char_in_any_car", "Comprueba si el actor se encuentra dentro de cualquier auto", 1, 1, emptyList(), "0205: actor 0@ in_any_car", "Vehículos"),
-      OpcodeDef(0x02E3, "02E3", "is_char_sitting_in_any_car", "Comprueba si el actor está sentado como pasajero/conductor", 1, 1, emptyList(), "02E3: actor 0@ stone", "Vehículos"),
-      OpcodeDef(0x00E1, "00E1", "player_pressed_key", "Comprueba si el jugador presionó una tecla o botón de control", 2, 2, emptyList(), "00E1: player 0 pressed_key 17", "Controles"),
-      OpcodeDef(0x045A, "045A", "print_with_number_now", "Imprime texto con número en pantalla durante un tiempo", 2, 3, emptyList(), "045A: print_with_number_now 1@ time 150 style 1", "HUD y Pantalla"),
-      OpcodeDef(0x00BC, "00BC", "print_text", "Imprime mensaje de texto con prioridad en el HUD", 1, 4, emptyList(), "00BC: print_text 'INFO' 2000", "HUD y Pantalla"),
-      OpcodeDef(0x0652, "0652", "get_player_stat", "Obtiene el valor de una estadística del jugador (1@ = player \$PLAYER_CHAR stat 121)", 1, 3, emptyList(), "0652: 1@ = player \$PLAYER_CHAR stat 121", "Estadísticas")
+      OpcodeDef(0x06E5, "06E5", "task_die", "Fuerza la muerte con animación inmediata del personaje", 1, 1, emptyList(), "06E5: task_die \$ACTOR", "Tareas de Peds")
     )
     defaultList.forEach {
       embeddedOpcodes[it.opcode] = it
       registerOfficial(it)
     }
-  }
-
-  fun loadKeywordsFromJsonString(json: String): Boolean {
-    return try {
-      val obj = JSONObject(json)
-
-      // 1. Comandos
-      if (obj.has("commands")) {
-        val cmds = obj.getJSONObject("commands")
-        cmds.keys().forEach { k ->
-          commandsMap[k.lowercase().trim()] = cmds.getString(k).trim().uppercase()
-        }
-      }
-
-      // 2. Clases y Métodos OOP
-      if (obj.has("oop_classes")) {
-        val classes = obj.getJSONObject("oop_classes")
-        classes.keys().forEach { className ->
-          val classObj = classes.getJSONObject(className)
-          val classMap = oopMethodsMap.getOrPut(className.lowercase().trim()) { mutableMapOf() }
-          classObj.keys().forEach { methodName ->
-            val methodObj = classObj.getJSONObject(methodName)
-            val opcode = methodObj.getString("opcode").trim().uppercase()
-            val desc = methodObj.optString("desc", "")
-            val argsList = mutableListOf<String>()
-            val argsArr = methodObj.optJSONArray("args")
-            if (argsArr != null) {
-              for (j in 0 until argsArr.length()) {
-                argsList.add(argsArr.getString(j))
-              }
-            }
-            classMap[methodName.lowercase().trim()] = OopMethodDef(opcode, desc, argsList)
-          }
-        }
-      }
-
-      // 3. Palabras clave de plantilla (filler words de Sanny Builder)
-      if (obj.has("template_keywords")) {
-        val arr = obj.getJSONArray("template_keywords")
-        for (i in 0 until arr.length()) {
-          templateKeywordsSet.add(arr.getString(i).lowercase().trim())
-        }
-      }
-
-      true
-    } catch (e: Exception) {
-      false
-    }
-  }
-
-  private fun tryAutoLoadKeywordsJson() {
-    try {
-      val candidateFiles = listOf(
-        File("src/main/assets/keywords_database.json"),
-        File("app/src/main/assets/keywords_database.json"),
-        File("../app/src/main/assets/keywords_database.json")
-      )
-      for (file in candidateFiles) {
-        if (file.exists() && file.length() > 0) {
-          loadKeywordsFromJsonString(file.readText(Charsets.UTF_8))
-          return
-        }
-      }
-      val stream = javaClass.classLoader?.getResourceAsStream("keywords_database.json")
-        ?: Thread.currentThread().contextClassLoader?.getResourceAsStream("keywords_database.json")
-      stream?.bufferedReader(Charsets.UTF_8)?.use { reader ->
-        loadKeywordsFromJsonString(reader.readText())
-      }
-    } catch (_: Throwable) {}
-  }
-
-  private fun loadEmbeddedKeywords() {
-    val defaultCommands = mapOf(
-      "thread" to "03A4",
-      "name_thread" to "03A4",
-      "create_thread" to "00D7",
-      "wait" to "0001",
-      "jump" to "0002",
-      "goto" to "0002",
-      "jf" to "004D",
-      "jump_if_false" to "004D",
-      "gosub" to "0050",
-      "return" to "0051",
-      "end_thread" to "0A93",
-      "end_custom_thread" to "0A93",
-      "terminate_this_custom_script" to "0A93",
-      "terminate_this_script" to "0A93",
-      "nop" to "0000",
-      "fade" to "016A",
-      "restore_camera" to "015D"
-    )
-    commandsMap.putAll(defaultCommands)
-
-    fun registerOop(cls: String, method: String, opcode: String, desc: String = "") {
-      val map = oopMethodsMap.getOrPut(cls.lowercase()) { mutableMapOf() }
-      map[method.lowercase()] = OopMethodDef(opcode, desc)
-    }
-
-    // Player
-    registerOop("Player", "Defined", "0256", "is_player_playing")
-    registerOop("Player", "Playing", "0256", "is_player_playing")
-    registerOop("Player", "CanMove", "02AB", "set_player_control")
-    registerOop("Player", "Money", "0109", "add_player_money")
-    registerOop("Player", "SetMoney", "010A", "set_player_money")
-    registerOop("Player", "Score", "0109", "add_player_score")
-    registerOop("Player", "Stat", "0652", "get_player_stat")
-    registerOop("Player", "PressedKey", "00E1", "player_pressed_key")
-    registerOop("Player", "Key", "00E1", "player_pressed_key")
-
-    // Actor / Char
-    listOf("Actor", "Char").forEach { cls ->
-      registerOop(cls, "Driving", "00DF", "is_char_in_any_car")
-      registerOop(cls, "InAnyCar", "0205", "is_char_in_any_car")
-      registerOop(cls, "InCar", "00DF", "is_char_in_car")
-      registerOop(cls, "Defined", "056D", "is_char_defined")
-      registerOop(cls, "Dead", "0118", "is_char_dead")
-      registerOop(cls, "Stopped", "0130", "is_char_stopped")
-      registerOop(cls, "Shoot", "0126", "is_char_shooting")
-      registerOop(cls, "Stone", "02E3", "is_char_sitting_in_any_car")
-      registerOop(cls, "StoreCoords", "04C4", "store_coords_to")
-      registerOop(cls, "Health", "0226", "set_char_health")
-      registerOop(cls, "Armour", "0227", "set_char_armour")
-      registerOop(cls, "Weapon", "01B2", "give_actor_weapon")
-      registerOop(cls, "Kill", "05E2", "as_actor_kill_actor")
-      registerOop(cls, "Destroy", "009B", "delete_actor")
-    }
-
-    // Car / Vehicle
-    listOf("Car", "Vehicle").forEach { cls ->
-      registerOop(cls, "Defined", "056E", "is_car_defined")
-      registerOop(cls, "Dead", "0119", "is_car_dead")
-      registerOop(cls, "DriveBy", "0713", "actor_driveby_actor")
-      registerOop(cls, "StoreCoords", "0407", "store_car_coords")
-      registerOop(cls, "Health", "0227", "set_car_health")
-      registerOop(cls, "Color", "0229", "change_car_colour")
-      registerOop(cls, "DoorStatus", "020A", "set_car_door_status")
-      registerOop(cls, "Destroy", "00A6", "delete_car")
-    }
-
-    // Camera
-    registerOop("Camera", "Restore", "015D", "restore_camera")
-    registerOop("Camera", "SetVector", "0159", "set_camera_pos")
-    registerOop("Camera", "PointAt", "0160", "point_camera_at_coords")
-    registerOop("Camera", "Fade", "016A", "fade")
-
-    // Audio
-    registerOop("Audio", "Play", "018D", "play_sound")
-    registerOop("Audio", "Stop", "018E", "stop_sound")
-    registerOop("Audio", "LoadStream", "0AAC", "load_audiostream")
-    registerOop("Audio", "PlayStream", "0AAD", "set_audiostream_state")
-
-    // Palabras clave de plantilla de Sanny Builder
-    val defaultKeywords = listOf(
-      "defined", "stat", "pressed_key", "stone", "in_any_car", "driving", "time", "style",
-      "boxed", "text", "model", "radius", "sphere", "actor", "char", "player", "car",
-      "vehicle", "object", "pickup", "marker", "blip", "weapon", "ammo", "health",
-      "armour", "armor", "money", "score", "speed", "angle", "heading", "offset",
-      "coords", "position", "handle", "type", "flag", "pedtype", "priority", "key",
-      "button", "group", "gang", "zone", "interior", "door", "component", "engine",
-      "lights", "color", "colour", "alpha", "sound", "stream", "volume", "target",
-      "source", "destination", "mode", "value", "result", "state", "counter", "timer",
-      "distance", "near", "far", "visible", "hidden", "frozen", "unfrozen", "active",
-      "inactive", "locked", "unlocked", "true", "false", "on", "off", "int", "float",
-      "now", "highpriority", "lowpriority", "help", "styled", "with", "from", "to",
-      "at", "in", "is", "has", "get", "set", "store", "check", "read", "write", "find",
-      "free", "load", "unload", "request", "destroy", "kill", "damage", "repair",
-      "warp", "teleport", "spawn", "point", "center", "axis", "vector", "scale",
-      "size", "width", "height", "depth", "min", "max", "step", "slot", "index"
-    )
-    defaultKeywords.forEach { templateKeywordsSet.add(it.lowercase()) }
   }
 }
