@@ -59,8 +59,8 @@ class CleoSyntaxVisualTransformation : VisualTransformation {
       }
     }
 
-    // Comentarios (// ...)
-    val commentRegex = Regex("//.*")
+    // Comentarios (// ..., ;, /* ... */, { ... })
+    val commentRegex = Regex("//.*|;.*|/\\*.*?\\*/|\\{.*?\\}")
     commentRegex.findAll(raw).forEach { matchResult ->
       builder.addStyle(
         SpanStyle(
@@ -72,8 +72,14 @@ class CleoSyntaxVisualTransformation : VisualTransformation {
       )
     }
 
-    // Palabras clave CLEO
-    val keywords = setOf("wait", "ms", "end_thread", "create_thread", "jump", "if", "then", "else", "jf", "goto", "hex", "end", "fade")
+    // Palabras clave CLEO y Sanny Builder
+    val keywords = setOf(
+      "wait", "ms", "sec", "end_thread", "end_custom_thread", "end_custom_script",
+      "terminate_this_script", "terminate_this_custom_script", "create_thread",
+      "name_thread", "thread", "jump", "goto", "jf", "jump_if_false", "gosub", "return",
+      "if", "then", "else", "end", "while", "repeat", "until", "and", "or", "not",
+      "hex", "fade", "fade_screen", "nop"
+    )
     val wordRegex = Regex("\\b([a-zA-Z_][a-zA-Z0-9_]*)\\b")
     wordRegex.findAll(raw).forEach { matchResult ->
       val word = matchResult.value.lowercase()
@@ -89,8 +95,34 @@ class CleoSyntaxVisualTransformation : VisualTransformation {
       }
     }
 
+    // Clases OOP (Player, Actor, Char, Car, Vehicle, Camera, Text)
+    val oopRegex = Regex("\\b(Player|Actor|Char|Car|Vehicle|Camera|Text|Audio|Memory|File)\\.[A-Za-z0-9_]+")
+    oopRegex.findAll(raw).forEach { matchResult ->
+      builder.addStyle(
+        SpanStyle(
+          color = Color(0xFF9333EA),
+          fontWeight = FontWeight.Bold
+        ),
+        matchResult.range.first,
+        matchResult.range.last + 1
+      )
+    }
+
+    // Variables locales (0@) y globales ($PLAYER_CHAR, $VAR)
+    val varRegex = Regex("(\\$\\w+|\\d+@[vs]?)")
+    varRegex.findAll(raw).forEach { matchResult ->
+      builder.addStyle(
+        SpanStyle(
+          color = Color(0xFFB45309),
+          fontWeight = FontWeight.Medium
+        ),
+        matchResult.range.first,
+        matchResult.range.last + 1
+      )
+    }
+
     // Números
-    val numberRegex = Regex("\\b\\d+\\b")
+    val numberRegex = Regex("\\b\\d+(?:\\.\\d+)?(?:f|ms|s)?\\b")
     numberRegex.findAll(raw).forEach { matchResult ->
       builder.addStyle(
         SpanStyle(

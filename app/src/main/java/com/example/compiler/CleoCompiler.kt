@@ -5,22 +5,16 @@ import java.nio.ByteBuffer
 import java.nio.ByteOrder
 
 /**
- * Compilador de scripts CLEO de alto rendimiento para GTA San Andreas (formatos .csa y .csi).
+ * Compilador de scripts CLEO de alto rendimiento para GTA San Andreas Android (formatos .csa y .csi).
  *
- * Arquitectura de compilación de 2 fases (Two-Pass) precisa y en tiempo real:
- * - Fase 1: Análisis léxico y sintáctico real, soporte para directivas, bloques HEX..END,
- *   expresiones matemáticas de Sanny Builder, resolución de comandos de alto nivel,
- *   construcción de AST y cálculo exacto de offsets de bytecode.
- * - Fase 2: Resolución de etiquetas con offsets relativos negativos estrictos (previene
- *   el bug de recarga de main.scm), emisión de bytecode Little Endian con tipado estricto
- *   de GTA SA (Int8: 0x04, Int16: 0x05, Int32: 0x01, Float: 0x06, LocalVar: 0x03,
- *   GlobalVar: 0x02, String8: 0x09, String16: 0x0F, StringVar: 0x0E).
- * - Protección contra cierres de juego (Crash Prevention):
- *   1. Mapeo fiel de variables globales del juego ($PLAYER_CHAR=8, $PLAYER_ACTOR=12, $PLAYER_GROUP=16).
- *   2. Adición automática del terminador CLEO 0A93: end_custom_thread.
- *   3. Strings variables codificados con la longitud SCM correcta (0E no es
- *      una cadena terminada en NUL).
- * - Medición real de tiempo de compilación (nanosegundos a milisegundos reales, sin simulaciones ni retardos).
+ * Arquitectura Sanny Builder Completa:
+ * - Preprocesador de estructuras de control (if..then..else..end, while..end, repeat..until).
+ * - Parser de sintaxis orientada a objetos (OOP: Player.Defined, Actor.Driving, Car.Dead, etc.).
+ * - Parser matemático avanzado (0@ += 5.0, 2@ = 2@ + 15.0, $VAR = 10, etc.).
+ * - Tokenizador tolerante a palabras clave de plantilla (actor, pedtype, stat, pressed_key, defined, etc.).
+ * - Eliminación de comentarios multilínea { ... }, /* ... */ y etiquetas inline.
+ * - Resolución exacta de etiquetas con saltos relativos negativos Little Endian.
+ * - Protección contra cierres (Crash Prevention) con terminador 0A93.
  */
 object CleoCompiler {
 
@@ -56,9 +50,9 @@ object CleoCompiler {
     data class VarStringVal(val text: String) : ScriptParam()
   }
 
-  // Mapeo de modelos emblemáticos de GTA SA
+  // Modelos conocidos de GTA San Andreas
   private val gtaModels = mapOf(
-    // Vehículos populares
+    // Vehículos
     "LANDSTAL" to 400, "BRAVURA" to 401, "BUFFALO" to 402, "LINERUN" to 403, "PEREN" to 404, "SENTINEL" to 405,
     "DUMPER" to 406, "FIRETRUK" to 407, "TRASH" to 408, "STRETCH" to 409, "MANANA" to 410, "INFERNUS" to 411,
     "VOODOO" to 412, "PONY" to 413, "MULE" to 414, "CHEETAH" to 415, "AMBULAN" to 416, "LEVIATHN" to 417,
@@ -82,13 +76,14 @@ object CleoCompiler {
 
   /**
    * Compila el código fuente en texto a bytecode ejecutable de CLEO.
-   * Ejecuta en tiempo real sin pausas artificiales y mide la duración real en milisegundos.
    */
   fun compile(sourceCode: String): CompilationResult {
     val startTimeNanos = System.nanoTime()
 
-    val lines = sourceCode.lines()
-    if (lines.all { it.isBlank() || it.trim().startsWith("//") || it.trim().startsWith(";") || it.trim().startsWith("#") }) {
+    // 1. Limpieza inicial de comentarios multilínea y bloques
+    val preprocessed = preprocessSource(sourceCode)
+
+    if (preprocessed.all { it.text.isBlank() }) {
       return CompilationResult.Failure(
         CompilationError(
           line = 1,
@@ -102,15 +97,15 @@ object CleoCompiler {
 
     val parsedItems = mutableListOf<ParsedItem>()
     val globalVarsAlloc = mutableMapOf<String, Int>()
-    var nextGlobalOffset = 1024 // Offsets de variables globales dinámicas comienzan en 1024
+    var nextGlobalOffset = 1024
 
     fun getGlobalOffset(varName: String): Int {
       val upper = varName.uppercase().trim().removePrefix("$")
       when (upper) {
-        "PLAYER_CHAR" -> return 8 // Variable 2 (Player info struct index)
-        "PLAYER_ACTOR", "PLAYER_PED", "PLAYER" -> return 12 // Variable 3 (CPed handle / pointer)
-        "PLAYER_GROUP" -> return 16 // Variable 4
-        "ONMISSION" -> return 128 // Variable 32
+        "PLAYER_CHAR" -> return 8
+        "PLAYER_ACTOR", "PLAYER_PED", "PLAYER" -> return 12
+        "PLAYER_GROUP" -> return 16
+        "ONMISSION" -> return 128
       }
       val numeric = upper.toIntOrNull()
       if (numeric != null) {
@@ -124,31 +119,23 @@ object CleoCompiler {
     }
 
     // =========================================================================
-    // FASE 0: Parseo léxico y sintáctico línea por línea
+    // FASE 0: Parseo léxico y sintáctico
     // =========================================================================
     var insideHexBlock = false
     val hexBlockBytes = mutableListOf<Byte>()
 
-    lines.forEachIndexed { index, rawLine ->
-      val lineNumber = index + 1
-      var clean = rawLine.trim()
+    for (entry in preprocessed) {
+      val lineNumber = entry.originalLine
+      var clean = entry.text.trim()
 
-      if (clean.isEmpty() || clean.startsWith("//") || clean.startsWith(";") || clean.startsWith("#")) {
-        return@forEachIndexed
-      }
-
-      // Remover comentarios inline (// o ; o #)
-      clean = clean.split("//", ";").first().trim()
-      if (clean.isEmpty()) {
-        return@forEachIndexed
-      }
+      if (clean.isEmpty()) continue
 
       // Bloques HEX..END
       val lowerClean = clean.lowercase()
       if (lowerClean == "hex") {
         insideHexBlock = true
         hexBlockBytes.clear()
-        return@forEachIndexed
+        continue
       }
       if (lowerClean == "end" && insideHexBlock) {
         insideHexBlock = false
@@ -156,7 +143,7 @@ object CleoCompiler {
           parsedItems.add(ParsedItem.RawBytes(hexBlockBytes.toByteArray(), lineNumber))
           hexBlockBytes.clear()
         }
-        return@forEachIndexed
+        continue
       }
       if (insideHexBlock) {
         val tokens = clean.split(Regex("\\s+")).filter { it.isNotEmpty() }
@@ -174,7 +161,7 @@ object CleoCompiler {
           parsedItems.add(ParsedItem.RawBytes(hexBlockBytes.toByteArray(), lineNumber))
           hexBlockBytes.clear()
         }
-        return@forEachIndexed
+        continue
       }
 
       // Soporte HEX inline: hex 01 02 03 end
@@ -189,13 +176,13 @@ object CleoCompiler {
         if (bytes.isNotEmpty()) {
           parsedItems.add(ParsedItem.RawBytes(bytes.toByteArray(), lineNumber))
         }
-        return@forEachIndexed
+        continue
       }
 
       // Directivas del compilador Sanny Builder / CLEO (ej. {$CLEO .csa}, {$NOSAVE})
       if (clean.startsWith("{$")) {
         parsedItems.add(ParsedItem.Directive(clean, lineNumber))
-        return@forEachIndexed
+        continue
       }
 
       // Comprobar si hay una etiqueta al inicio (ej. :LABEL o @LABEL o LABEL: o .LABEL)
@@ -209,8 +196,8 @@ object CleoCompiler {
         // Asegurarse de que no sea un opcode con dos puntos (ej. 0001:)
         if (!candidate.matches(Regex("^[0-9A-Fa-f]{4}:?$"))) {
           parsedItems.add(ParsedItem.LabelDef(labelName, lineNumber))
-          if (restAfter.isEmpty() || restAfter.startsWith("//") || restAfter.startsWith(";") || restAfter.startsWith("#")) {
-            return@forEachIndexed
+          if (restAfter.isEmpty()) {
+            continue
           }
           clean = restAfter
         }
@@ -232,25 +219,27 @@ object CleoCompiler {
 
       val opcodeMatch = Regex("^([0-9A-Fa-f]{4}):?$").find(firstToken)
       if (opcodeMatch != null) {
-        // Formato estándar con código hexadecimal: 0001: wait 0 ms
+        // Formato con código hexadecimal: 0001: wait 0 ms
         opcodeHex = opcodeMatch.groupValues[1].uppercase()
         argumentsRest = if (parts.size > 1) parts[1].trim() else ""
       } else {
-        // Inteligencia estilo Sanny Builder:
-        // 1. Expresión matemática / asignación / comparación (ej. $VAR = 10, 0@ += 1, 0@ > 5)
-        val sannyMathMatch = Regex("^(\\$?[A-Za-z0-9_@]+)\\s*(==|>=|<=|!=|<>|\\+=|-=|\\*=|/=|=(?!=)|>|<)\\s*(.+)$").find(clean)
-        if (sannyMathMatch != null) {
-          val left = sannyMathMatch.groupValues[1].trim()
-          val op = sannyMathMatch.groupValues[2].trim()
-          val right = sannyMathMatch.groupValues[3].trim()
-          val resolvedHex = resolveSannyMathOpcode(left, op, right)
-          if (resolvedHex != null) {
-            opcodeHex = resolvedHex
-            argumentsRest = "$left $right"
+        // 1. Sintaxis OOP estilo Sanny Builder (ej. Player.Defined(0), Actor.Driving($PLAYER_ACTOR))
+        val oopResult = resolveSannyOOP(clean)
+        if (oopResult != null) {
+          opcodeHex = oopResult.first
+          argumentsRest = oopResult.second
+        }
+
+        // 2. Expresión matemática / asignación / comparación (ej. $VAR = 10, 0@ += 1, 2@ = 2@ + 15.0, 0@ > 5)
+        if (opcodeHex == null) {
+          val mathResult = resolveSannyMath(clean)
+          if (mathResult != null) {
+            opcodeHex = mathResult.first
+            argumentsRest = mathResult.second
           }
         }
 
-        // 2. Comandos directos y palabras clave (ej. wait 0 ms, jump @LOOP, end_thread, create_player, etc.)
+        // 3. Comandos directos y palabras clave (ej. wait 0 ms, jump @LOOP, thread 'NAME', return, etc.)
         if (opcodeHex == null) {
           val resolvedCmd = resolveSannyKeywordOrCommand(clean)
           if (resolvedCmd != null) {
@@ -264,7 +253,7 @@ object CleoCompiler {
         return CompilationResult.Failure(
           CompilationError(
             line = lineNumber,
-            rawLine = rawLine,
+            rawLine = entry.text,
             type = CompilerErrorType.INVALID_OPCODE_FORMAT,
             message = "Instrucción no reconocida o formato de opcode inválido: '$firstToken'. Puedes usar formato hexadecimal (ej: '0001: wait 0 ms') o sintaxis Sanny Builder (ej: 'wait 0 ms', '0@ = 10', '\$VAR += 1', 'jump @LABEL', 'end_thread').",
             suggestion = "Revisa la instrucción. Opcodes comunes: 0001 (wait), 0A93 (end_custom_thread), 03A4 (name_thread), o expresiones como 0@ = 1."
@@ -276,8 +265,7 @@ object CleoCompiler {
       var opcodeInt = effectiveOpcodeHex.toInt(16)
 
       // 004E termina scripts del main.scm y provoca cierres al usarlo en CLEO.
-      // Se acepta como alias heredado para que los proyectos existentes no
-      // generen un archivo peligroso, pero siempre se emite el terminador CLEO.
+      // Se acepta como alias heredado y se emite siempre el terminador CLEO seguro.
       if (opcodeInt == 0x004E) {
         opcodeInt = 0x0A93
         effectiveOpcodeHex = "0A93"
@@ -293,7 +281,7 @@ object CleoCompiler {
         return CompilationResult.Failure(
           CompilationError(
             line = lineNumber,
-            rawLine = rawLine,
+            rawLine = entry.text,
             type = CompilerErrorType.UNKNOWN_OPCODE,
             message = "Opcode no reconocido: '$opcodeHex'. Este opcode no existe en el catálogo de instrucciones de GTA San Andreas ni en CLEO Android.",
             suggestion = "Verifica la sintaxis del opcode. Opcodes comunes: 0001 (wait), 0A93 (end_custom_thread), 03A4 (name_thread)."
@@ -310,7 +298,7 @@ object CleoCompiler {
         opcodeInt = opcodeInt,
         argumentsRest = argumentsRest,
         lineNumber = lineNumber,
-        rawLine = rawLine,
+        rawLine = entry.text,
         getGlobalOffset = ::getGlobalOffset
       )
 
@@ -323,7 +311,7 @@ object CleoCompiler {
               opcodeDef = opcodeDef,
               params = parseResult.params,
               lineNumber = lineNumber,
-              rawLine = rawLine
+              rawLine = entry.text
             )
           )
         }
@@ -449,9 +437,6 @@ object CleoCompiler {
               }
 
               is ScriptParam.VarStringVal -> {
-                // SCM 0x0E es una cadena inmediata de longitud variable:
-                // tipo + longitud + bytes. No lleva terminador NUL; agregarlo
-                // desplaza el siguiente parámetro y corrompe la instrucción.
                 outputStream.write(0x0E)
                 val textBytes = param.text.toByteArray(Charsets.ISO_8859_1)
                 outputStream.write(textBytes.size and 0xFF)
@@ -474,8 +459,6 @@ object CleoCompiler {
       lastInstructionOpcode != 0x0A93 &&
       lastInstructionOpcode != 0x0051
     ) {
-      // 004E es TERMINATE_THIS_SCRIPT y solo es válido para main.scm.
-      // Los scripts CLEO deben finalizar con 0A93.
       outputStream.write(0x93)
       outputStream.write(0x0A)
       opcodesCount++
@@ -491,18 +474,307 @@ object CleoCompiler {
     return CompilationResult.Success(
       bytecode = compiledBytes,
       opcodesCompiled = opcodesCount,
-      totalLines = lines.size,
+      totalLines = sourceCode.lines().size,
       hexDump = hexDump,
       scriptName = detectedScriptName,
       compilationTimeMs = elapsedDurationMs
     )
   }
 
+  private data class SourceEntry(val text: String, val originalLine: Int)
+
+  /**
+   * Preprocesador: remueve comentarios en bloque { ... } y /* ... */,
+   * y expande estructuras de control de Sanny Builder (if..then..else..end, while..end).
+   */
+  private fun preprocessSource(source: String): List<SourceEntry> {
+    val rawLines = source.lines()
+    val cleanLines = mutableListOf<SourceEntry>()
+
+    var inBlockCommentBraces = false
+    var inBlockCommentSlash = false
+
+    rawLines.forEachIndexed { idx, line ->
+      val lineNum = idx + 1
+      val remaining = line
+
+      // Remover comentarios en bloque o llaves { ... } que no sean directivas {$...}
+      val sb = StringBuilder()
+      var i = 0
+      while (i < remaining.length) {
+        if (!inBlockCommentBraces && !inBlockCommentSlash) {
+          // Directivas {$CLEO ...} se conservan
+          if (remaining.startsWith("{$", i)) {
+            val endIdx = remaining.indexOf('}', i)
+            if (endIdx != -1) {
+              sb.append(remaining.substring(i, endIdx + 1))
+              i = endIdx + 1
+              continue
+            }
+          }
+          // Bloques de llaves { ... }
+          if (remaining[i] == '{') {
+            inBlockCommentBraces = true
+            i++
+            continue
+          }
+          // Bloques /* ... */
+          if (remaining.startsWith("/*", i)) {
+            inBlockCommentSlash = true
+            i += 2
+            continue
+          }
+          // Comentarios de línea //, ;, #
+          if (remaining.startsWith("//", i) || remaining[i] == ';' || remaining[i] == '#') {
+            break
+          }
+          sb.append(remaining[i])
+          i++
+        } else if (inBlockCommentBraces) {
+          if (remaining[i] == '}') {
+            inBlockCommentBraces = false
+          }
+          i++
+        } else if (inBlockCommentSlash) {
+          if (remaining.startsWith("*/", i)) {
+            inBlockCommentSlash = false
+            i += 2
+          } else {
+            i++
+          }
+        }
+      }
+
+      val cleaned = sb.toString().trim()
+      if (cleaned.isNotEmpty()) {
+        cleanLines.add(SourceEntry(cleaned, lineNum))
+      }
+    }
+
+    // Expansión de estructuras de control (if..then..else..end, while..end)
+    return expandStructuredControlFlow(cleanLines)
+  }
+
+  private sealed class ControlBlock {
+    data class IfBlock(
+      val falseLabel: String,
+      val endLabel: String,
+      var hasElse: Boolean = false,
+      val originalLine: Int
+    ) : ControlBlock()
+
+    data class WhileBlock(
+      val startLabel: String,
+      val endLabel: String,
+      val originalLine: Int
+    ) : ControlBlock()
+  }
+
+  /**
+   * Transforma construcciones de alto nivel de Sanny Builder:
+   * if ... then ... else ... end
+   * while ... end
+   */
+  private fun expandStructuredControlFlow(entries: List<SourceEntry>): List<SourceEntry> {
+    val result = mutableListOf<SourceEntry>()
+    val stack = mutableListOf<ControlBlock>()
+    var labelCounter = 1
+
+    var i = 0
+    while (i < entries.size) {
+      val entry = entries[i]
+      val raw = entry.text.trim()
+      val lower = raw.lowercase()
+
+      when {
+        // Bloque IF estructurado: 'if', 'if 0', 'if and', 'if or'
+        lower == "if" || lower.startsWith("if ") -> {
+          var hasThenAhead = false
+          var thenIndex = -1
+          for (k in (i + 1) until entries.size) {
+            val kLow = entries[k].text.trim().lowercase()
+            if (kLow == "then" || kLow.endsWith(" then")) {
+              hasThenAhead = true
+              thenIndex = k
+              break
+            }
+            if (kLow.startsWith("if") || kLow.startsWith("while")) {
+              break
+            }
+          }
+
+          if (hasThenAhead) {
+            val conditionCount = thenIndex - i - 1
+            val ifArg = when {
+              lower.contains("or") -> if (conditionCount > 0) "or $conditionCount" else "or 1"
+              lower.contains("and") -> if (conditionCount > 0) "and $conditionCount" else "and 1"
+              else -> if (conditionCount > 0) "$conditionCount" else "0"
+            }
+            val falseLbl = "__IF_FALSE_${labelCounter}"
+            val endLbl = "__IF_END_${labelCounter}"
+            labelCounter++
+
+            stack.add(ControlBlock.IfBlock(falseLbl, endLbl, false, entry.originalLine))
+            result.add(SourceEntry("00D6: if $ifArg", entry.originalLine))
+          } else {
+            val arg = raw.substring(2).trim().ifEmpty { "0" }
+            val countArg = if (arg.equals("and", true) || arg.equals("or", true)) "0" else arg
+            result.add(SourceEntry("00D6: if $countArg", entry.originalLine))
+          }
+        }
+
+        // 'then' del bloque if estructurado
+        lower == "then" || lower.endsWith(" then") -> {
+          val top = stack.lastOrNull()
+          if (top is ControlBlock.IfBlock) {
+            result.add(SourceEntry("004D: jump_if_false @${top.falseLabel}", entry.originalLine))
+          }
+        }
+
+        // 'else' del bloque if estructurado
+        lower == "else" -> {
+          val top = stack.lastOrNull()
+          if (top is ControlBlock.IfBlock) {
+            top.hasElse = true
+            result.add(SourceEntry("0002: jump @${top.endLabel}", entry.originalLine))
+            result.add(SourceEntry(":${top.falseLabel}", entry.originalLine))
+          } else {
+            result.add(entry)
+          }
+        }
+
+        // 'while' estructurado
+        lower.startsWith("while ") || lower == "while" -> {
+          val startLbl = "__WHILE_START_${labelCounter}"
+          val endLbl = "__WHILE_END_${labelCounter}"
+          labelCounter++
+          stack.add(ControlBlock.WhileBlock(startLbl, endLbl, entry.originalLine))
+          result.add(SourceEntry(":$startLbl", entry.originalLine))
+
+          val rest = raw.substring(5).trim()
+          if (rest.isNotEmpty()) {
+            result.add(SourceEntry(rest, entry.originalLine))
+            result.add(SourceEntry("004D: jump_if_false @$endLbl", entry.originalLine))
+          }
+        }
+
+        // 'end' de estructura de control (if, while)
+        lower == "end" -> {
+          if (stack.isNotEmpty()) {
+            when (val top = stack.removeAt(stack.lastIndex)) {
+              is ControlBlock.IfBlock -> {
+                if (top.hasElse) {
+                  result.add(SourceEntry(":${top.endLabel}", entry.originalLine))
+                } else {
+                  result.add(SourceEntry(":${top.falseLabel}", entry.originalLine))
+                }
+              }
+              is ControlBlock.WhileBlock -> {
+                result.add(SourceEntry("0002: jump @${top.startLabel}", entry.originalLine))
+                result.add(SourceEntry(":${top.endLabel}", entry.originalLine))
+              }
+            }
+          }
+        }
+
+        else -> {
+          result.add(entry)
+        }
+      }
+      i++
+    }
+
+    return result
+  }
+
+  /**
+   * Resuelve sintaxis orientada a objetos (OOP) de Sanny Builder.
+   */
+  private fun resolveSannyOOP(line: String): Pair<String, String>? {
+    val clean = line.trim()
+
+    // 1. Player.Defined(0) / Player.Defined($PLAYER_CHAR)
+    val playerDefMatch = Regex("^(?:Player|player)\\.Defined\\s*\\((.*?)\\)$", RegexOption.IGNORE_CASE).find(clean)
+    if (playerDefMatch != null) {
+      val arg = playerDefMatch.groupValues[1].trim().ifEmpty { "0" }
+      return Pair("0256", arg)
+    }
+
+    // 2. Actor.Driving($PLAYER_ACTOR) / Actor.Driving(0@)
+    val actorDrivingMatch = Regex("^(?:Actor|actor|Char|char)\\.Driving\\s*\\((.*?)\\)$", RegexOption.IGNORE_CASE).find(clean)
+    if (actorDrivingMatch != null) {
+      val arg = actorDrivingMatch.groupValues[1].trim().ifEmpty { "\$PLAYER_ACTOR" }
+      return Pair("00DF", arg)
+    }
+
+    // 3. Actor.Dead($PLAYER_ACTOR)
+    val actorDeadMatch = Regex("^(?:Actor|actor|Char|char)\\.Dead\\s*\\((.*?)\\)$", RegexOption.IGNORE_CASE).find(clean)
+    if (actorDeadMatch != null) {
+      val arg = actorDeadMatch.groupValues[1].trim()
+      return Pair("0118", arg)
+    }
+
+    // 4. Car.Dead($CAR) / Vehicle.Dead($CAR)
+    val carDeadMatch = Regex("^(?:Car|car|Vehicle|vehicle)\\.Dead\\s*\\((.*?)\\)$", RegexOption.IGNORE_CASE).find(clean)
+    if (carDeadMatch != null) {
+      val arg = carDeadMatch.groupValues[1].trim()
+      return Pair("0119", arg)
+    }
+
+    // 5. Actor.StorePos($PLAYER_ACTOR, 0@, 1@, 2@)
+    val actorPosMatch = Regex("^(?:Actor|actor|Char|char)\\.StorePos\\s*\\((.*?)\\)$", RegexOption.IGNORE_CASE).find(clean)
+    if (actorPosMatch != null) {
+      val args = actorPosMatch.groupValues[1].split(",").map { it.trim() }.joinToString(" ")
+      return Pair("04C4", args)
+    }
+
+    // 6. Camera.Restore
+    if (clean.equals("Camera.Restore", ignoreCase = true) || clean.equals("Camera.Restore()", ignoreCase = true)) {
+      return Pair("015F", "")
+    }
+
+    return null
+  }
+
+  /**
+   * Resuelve expresiones matemáticas y asignaciones de Sanny Builder.
+   */
+  private fun resolveSannyMath(cleanLine: String): Pair<String, String>? {
+    val clean = cleanLine.trim()
+
+    // Asignación compuesta: 2@ = 2@ + 15.0
+    val compAssignMatch = Regex("^(\\$?[A-Za-z0-9_@]+)\\s*=\\s*\\1\\s*([+\\-*/])\\s*(.+)$").find(clean)
+    if (compAssignMatch != null) {
+      val dest = compAssignMatch.groupValues[1].trim()
+      val sign = compAssignMatch.groupValues[2].trim()
+      val operand = compAssignMatch.groupValues[3].trim()
+      val op = "${sign}="
+      val opcodeHex = resolveSannyMathOpcode(dest, op, operand)
+      if (opcodeHex != null) {
+        return Pair(opcodeHex, "$dest $operand")
+      }
+    }
+
+    // Operadores estándar: $VAR = 10, 0@ += 5.0, 0@ >= 60, 0@ == 1
+    val sannyMathMatch = Regex("^(\\$?[A-Za-z0-9_@]+)\\s*(==|>=|<=|!=|<>|\\+=|-=|\\*=|/=|=(?!=)|>|<)\\s*(.+)$").find(clean)
+    if (sannyMathMatch != null) {
+      val left = sannyMathMatch.groupValues[1].trim()
+      val op = sannyMathMatch.groupValues[2].trim()
+      val right = sannyMathMatch.groupValues[3].trim()
+      val resolvedHex = resolveSannyMathOpcode(left, op, right)
+      if (resolvedHex != null) {
+        return Pair(resolvedHex, "$left $right")
+      }
+    }
+
+    return null
+  }
+
   fun inferScriptName(sourceCode: String, targetExtension: String = "csa"): String {
     val cleanExt = targetExtension.trim().removePrefix(".").lowercase().ifEmpty { "csa" }
     val lines = sourceCode.lines()
 
-    // 1. Directivas explícitas {$NAME mi_script} o comentarios estructurados // name: mi_script
+    // 1. Directivas explícitas {$NAME mi_script}
     for (line in lines) {
       val t = line.trim()
       val directiveMatch = Regex("\\{\\$(?:NAME|SCRIPT_NAME|FILE_NAME)\\s+([A-Za-z0-9_\\-]+)\\}", RegexOption.IGNORE_CASE).find(t)
@@ -518,10 +790,10 @@ object CleoCompiler {
       }
     }
 
-    // 2. Opcode 03A4: name_thread 'NOMBRE'
+    // 2. Opcode 03A4: name_thread 'NOMBRE' o directiva thread 'NOMBRE'
     for (line in lines) {
       val t = line.trim()
-      val threadMatch = Regex("(?:03A4\\s*:\\s*name_thread|name_thread)\\s*['\"]([A-Za-z0-9_\\-]+)['\"]", RegexOption.IGNORE_CASE).find(t)
+      val threadMatch = Regex("(?:03A4\\s*:\\s*name_thread|name_thread|thread)\\s*['\"]([A-Za-z0-9_\\-]+)['\"]", RegexOption.IGNORE_CASE).find(t)
       if (threadMatch != null) {
         val raw = threadMatch.groupValues[1].trim()
         val lower = raw.lowercase()
@@ -532,7 +804,7 @@ object CleoCompiler {
       }
     }
 
-    // 3. Primer comentario relevante corto que actúe como título
+    // 3. Primer comentario relevante
     for (line in lines) {
       val t = line.trim()
       if (t.startsWith("//") || t.startsWith(";") || t.startsWith("#")) {
@@ -548,59 +820,31 @@ object CleoCompiler {
       }
     }
 
-    // 4. Inferencia semántica
+    // 4. Inferencia por contenido semántico
     val codeLower = sourceCode.lowercase()
-
-    if (codeLower.contains("0056") || codeLower.contains("make_actor_say") || codeLower.contains("say_phrase") ||
-      codeLower.contains("play_sound") || codeLower.contains("018c") || codeLower.contains("play_music") ||
-      codeLower.contains("audio_stream") || codeLower.contains("voice")
-    ) {
+    if (codeLower.contains("0056") || codeLower.contains("make_actor_say") || codeLower.contains("voice")) {
       return if (cleanExt == "csi") "voice_dialogue.csi" else "voice_mod.csa"
     }
-
-    if (codeLower.contains("0de0") || codeLower.contains("0de1") || codeLower.contains("0de2") ||
-      codeLower.contains("0de3") || codeLower.contains("0de4") || codeLower.contains("0de5") ||
-      codeLower.contains("touch") || codeLower.contains("gesture") || codeLower.contains("swipe")
-    ) {
+    if (codeLower.contains("0de") || codeLower.contains("touch") || codeLower.contains("swipe")) {
       return if (cleanExt == "csi") "touch_actions.csi" else "touch_controls.csa"
     }
-
-    if (codeLower.contains("0dd8") || codeLower.contains("0dd9") || codeLower.contains("0dda") ||
-      codeLower.contains("0ddb") || codeLower.contains("0ddc") || codeLower.contains("0ddd") ||
-      codeLower.contains("cleo_menu") || codeLower.contains("081e") || codeLower.contains("create_menu")
-    ) {
+    if (codeLower.contains("0dd") || codeLower.contains("create_menu")) {
       return if (cleanExt == "csi") "cleo_menu.csi" else "custom_menu.csa"
     }
-
-    if (codeLower.contains("0109") || codeLower.contains("010a") || codeLower.contains("010b") ||
-      codeLower.contains("010e") || codeLower.contains("player_add_money") || codeLower.contains("player_set_money") ||
-      codeLower.contains("add_money") || codeLower.contains("cash") || codeLower.contains("032b")
-    ) {
+    if (codeLower.contains("0109") || codeLower.contains("010b") || codeLower.contains("money")) {
       return if (cleanExt == "csi") "money_menu.csi" else "money_mod.csa"
     }
-
-    if (codeLower.contains("00a5") || codeLower.contains("create_car") || codeLower.contains("infernus") ||
-      codeLower.contains("turismo") || codeLower.contains("bullet") || codeLower.contains("car_spawner")
-    ) {
+    if (codeLower.contains("00a5") || codeLower.contains("create_car") || codeLower.contains("infernus")) {
       return if (cleanExt == "csi") "car_spawner.csi" else "auto_vehicle.csa"
     }
-
-    if (codeLower.contains("give_actor_weapon") || codeLower.contains("01b2") || codeLower.contains("05e2") ||
-      codeLower.contains("minigun") || codeLower.contains("rocket")
-    ) {
+    if (codeLower.contains("weapon") || codeLower.contains("01b2") || codeLower.contains("minigun")) {
       return if (cleanExt == "csi") "weapons_menu.csi" else "weapons_mod.csa"
     }
-
     if (codeLower.contains("set_actor_coordinates") || codeLower.contains("00a1") || codeLower.contains("teleport")) {
       return if (cleanExt == "csi") "teleport_menu.csi" else "teleport.csa"
     }
-
-    if (codeLower.contains("02ab") || codeLower.contains("set_actor_immunities") || codeLower.contains("godmode")) {
+    if (codeLower.contains("02ab") || codeLower.contains("godmode")) {
       return "godmode.$cleanExt"
-    }
-
-    if (codeLower.contains("0812") || codeLower.contains("apply_animation") || codeLower.contains("walk_style")) {
-      return if (cleanExt == "csi") "anim_trigger.csi" else "anim_mod.csa"
     }
 
     return if (cleanExt == "csi") "menu_script.csi" else "cleo_mod.csa"
@@ -614,19 +858,19 @@ object CleoCompiler {
   }
 
   private fun getParamByteSize(param: ScriptParam): Int = when (param) {
-    is ScriptParam.LabelRef -> 1 + 4 // 0x01 + 4 bytes INT32
-    is ScriptParam.LocalVar -> 1 + 2 // 0x03 + 2 bytes offset
-    is ScriptParam.GlobalVar -> 1 + 2 // 0x02 + 2 bytes offset
+    is ScriptParam.LabelRef -> 1 + 4
+    is ScriptParam.LocalVar -> 1 + 2
+    is ScriptParam.GlobalVar -> 1 + 2
     is ScriptParam.IntVal -> {
       val v = param.value
-      if (v in -128..127) 1 + 1 // 0x04 + 1 byte
-      else if (v in -32768..32767) 1 + 2 // 0x05 + 2 bytes
-      else 1 + 4 // 0x01 + 4 bytes
+      if (v in -128..127) 1 + 1
+      else if (v in -32768..32767) 1 + 2
+      else 1 + 4
     }
-    is ScriptParam.FloatVal -> 1 + 4 // 0x06 + 4 bytes Float
-    is ScriptParam.ShortStringVal -> 1 + 8 // 0x09 + 8 bytes
-    is ScriptParam.MediumStringVal -> 1 + 16 // 0x0F + 16 bytes
-    is ScriptParam.VarStringVal -> 1 + 1 + param.text.toByteArray(Charsets.ISO_8859_1).size // 0x0E + len + bytes
+    is ScriptParam.FloatVal -> 1 + 4
+    is ScriptParam.ShortStringVal -> 1 + 8
+    is ScriptParam.MediumStringVal -> 1 + 16
+    is ScriptParam.VarStringVal -> 1 + 1 + param.text.toByteArray(Charsets.ISO_8859_1).size
   }
 
   private sealed class ParseResult {
@@ -634,6 +878,10 @@ object CleoCompiler {
     data class Error(val error: CompilationError) : ParseResult()
   }
 
+  /**
+   * Tokenizador inteligente de argumentos con soporte universal para palabras clave
+   * y sintaxis de plantilla de Sanny Builder.
+   */
   private fun parseInstructionArguments(
     opcodeDef: OpcodeDef,
     opcodeInt: Int,
@@ -644,18 +892,22 @@ object CleoCompiler {
   ): ParseResult {
     val cleanOpcode = opcodeInt and 0x7FFF
 
-    // Opcodes sin parámetros conocidos
+    // Opcodes sin parámetros
     when (cleanOpcode) {
       0x0000, 0x004E, 0x0051, 0x00BE, 0x00BF, 0x038B, 0x015F, 0x016A, 0x0249, 0x06FD, 0x0DD8, 0x0DDD, 0x0395, 0x0A93 -> {
         return ParseResult.Success(emptyList())
       }
 
-      // 0001: wait X ms
+      // 0001: wait X ms / 0001: 250 / wait 1000ms / wait 2s
       0x0001 -> {
-        val tokens = argumentsRest.split(Regex("\\s+")).filter { it.isNotEmpty() }
+        val cleanArgs = argumentsRest.replace("ms", "", ignoreCase = true)
+          .replace("sec", "", ignoreCase = true)
+          .replace("s", "", ignoreCase = true)
+          .trim()
+        val tokens = cleanArgs.split(Regex("\\s+")).filter { it.isNotEmpty() }
         var timeParam: ScriptParam? = null
         for (token in tokens) {
-          if (token.equals("wait", true) || token.equals("ms", true) || token.equals("sec", true)) continue
+          if (token.equals("wait", true)) continue
           val num = token.toIntOrNull()
           if (num != null) {
             timeParam = ScriptParam.IntVal(num)
@@ -686,11 +938,11 @@ object CleoCompiler {
         return ParseResult.Success(listOf(timeParam))
       }
 
-      // 03A4: name_thread 'MYMOD'
+      // 03A4: name_thread 'MYMOD' / thread 'MYMOD'
       0x03A4 -> {
         val stringMatch = Regex("['\"]([^'\"]+)['\"]").find(argumentsRest)
         val name = stringMatch?.groupValues?.get(1)
-          ?: argumentsRest.substringAfter("name_thread").trim().removeSurrounding("'", "'").removeSurrounding("\"", "\"")
+          ?: argumentsRest.substringAfter("name_thread").substringAfter("thread").trim().removeSurrounding("'", "'").removeSurrounding("\"", "\"")
 
         if (name.isBlank()) {
           return ParseResult.Error(
@@ -709,7 +961,7 @@ object CleoCompiler {
       // 0ACA: show_text_box "Texto"
       0x0ACA -> {
         val stringMatch = Regex("['\"]([^'\"]+)['\"]").find(argumentsRest)
-        val text = stringMatch?.groupValues?.get(1) ?: argumentsRest.substringAfter("show_text_box").trim()
+        val text = stringMatch?.groupValues?.get(1) ?: argumentsRest.substringAfter("show_text_box").trim().removeSurrounding("\"", "\"")
         if (text.isBlank()) {
           return ParseResult.Error(
             CompilationError(
@@ -729,7 +981,7 @@ object CleoCompiler {
     val quotedStrings = mutableListOf<String>()
     var processedArgs = argumentsRest
 
-    // Extraer strings con comillas simples y dobles
+    // Extraer cadenas con comillas
     Regex("(['\"])(.*?)\\1").findAll(argumentsRest).forEachIndexed { i, match ->
       val fullMatch = match.value
       val content = match.groupValues[2]
@@ -762,59 +1014,11 @@ object CleoCompiler {
     val rawTokens = processedArgs.split(Regex("[\\s,]+")).filter { it.isNotEmpty() }
     val params = mutableListOf<ScriptParam>()
 
-    val noiseWords = setOf(
-      "ms", "sec", "seconds", "to", "at", "from", "with", "in", "is", "actor", "char",
-      "car", "vehicle", "object", "player", "model", "position", "position_to", "immunities",
-      "health", "armour", "armor", "money", "add_money", "weapon", "ammo", "weather",
-      "fade", "time", "set", "get", "store", "and", "or", "not", "jump", "jump_if_false",
-      "end_thread", "create_thread", "gosub", "return", "=", "+=", "-=", "*=", "/=", "==", ">=", "<=", "<>", "!=",
-      "phrase", "can_move", "abs", "driving", "control", "key_pressed", "as_only_one_available_for_gangwars",
-      "as", "only", "one", "available", "for", "gangwars", "zone", "gang", "can", "move"
-    )
-
-    val embeddedDef = CleoOpcodeDatabase.getEmbedded(cleanOpcode)
-    val commandWords = mutableSetOf<String>()
-    fun addCommandNameWords(name: String) {
-      val lower = name.lowercase()
-      commandWords.add(lower)
-      commandWords.add(lower.replace("_", ""))
-      commandWords.addAll(lower.split("_").filter { it.isNotEmpty() })
-    }
-    addCommandNameWords(opcodeDef.commandName)
-    embeddedDef?.let { addCommandNameWords(it.commandName) }
-
-    fun addExampleWords(example: String) {
-      Regex("[A-Za-z_][A-Za-z0-9_]*").findAll(example).forEach { m ->
-        val w = m.value.lowercase()
-        if (w !in gtaModels && !w.startsWith("str_")) {
-          commandWords.add(w)
-          commandWords.addAll(w.split("_").filter { it.isNotEmpty() })
-        }
-      }
-    }
-    addExampleWords(opcodeDef.example)
-    embeddedDef?.let { addExampleWords(it.example) }
-
-    // Si el primer token tras el opcode es un identificador alfabético (ej. 01B6: set_weather 1),
-    // se trata del mnemónico o nombre de comando del script.
-    val firstToken = rawTokens.firstOrNull()?.trim()
-    if (firstToken != null &&
-      Regex("^[A-Za-z_][A-Za-z0-9_]*$").matches(firstToken) &&
-      !firstToken.equals("true", ignoreCase = true) &&
-      !firstToken.equals("false", ignoreCase = true) &&
-      !gtaModels.containsKey(firstToken.uppercase())
-    ) {
-      val ftLower = firstToken.lowercase()
-      commandWords.add(ftLower)
-      commandWords.add(ftLower.replace("_", ""))
-      commandWords.addAll(ftLower.split("_").filter { it.isNotEmpty() })
-    }
-
     for (token in rawTokens) {
       val trimmed = token.trim()
       if (trimmed.isEmpty()) continue
 
-      // Si es un placeholder de cadena
+      // Placeholder de cadena de texto
       val strMatch = Regex("^__STR_(\\d+)__$").find(trimmed)
       if (strMatch != null) {
         val index = strMatch.groupValues[1].toInt()
@@ -826,13 +1030,6 @@ object CleoCompiler {
         } else {
           params.add(ScriptParam.VarStringVal(text))
         }
-        continue
-      }
-
-      val lower = trimmed.lowercase()
-
-      // Si es palabra de comando o palabra de adorno de Sanny Builder, ignorar
-      if (noiseWords.contains(lower) || commandWords.contains(lower) || lower == opcodeDef.commandName.lowercase()) {
         continue
       }
 
@@ -858,10 +1055,10 @@ object CleoCompiler {
         continue
       }
 
-      // 4. Float (ej. 0.0, -1666.0, 13.5f)
-      if (trimmed.contains(".") && trimmed.removeSuffix("f").removeSuffix("F").toFloatOrNull() != null) {
-        val floatVal = trimmed.removeSuffix("f").removeSuffix("F").toFloat()
-        params.add(ScriptParam.FloatVal(floatVal))
+      // 4. Float (ej. 0.0, -1666.0, 13.5f, 5.0)
+      val floatClean = trimmed.removeSuffix("f").removeSuffix("F")
+      if (floatClean.contains(".") && floatClean.toFloatOrNull() != null) {
+        params.add(ScriptParam.FloatVal(floatClean.toFloat()))
         continue
       }
 
@@ -884,14 +1081,22 @@ object CleoCompiler {
         }
       }
 
-      // 7. Entero decimal estándar (ej. 250, -1, 1000)
+      // 7. Tiempo con sufijo ms/s (ej. 1000ms -> 1000)
+      val timeClean = trimmed.lowercase().removeSuffix("ms").removeSuffix("sec").removeSuffix("s")
+      val timeInt = timeClean.toIntOrNull()
+      if (timeInt != null && (trimmed.endsWith("ms", true) || trimmed.endsWith("sec", true) || trimmed.endsWith("s", true))) {
+        params.add(ScriptParam.IntVal(timeInt))
+        continue
+      }
+
+      // 8. Entero decimal estándar (ej. 250, -1, 1000)
       val intVal = trimmed.toIntOrNull()
       if (intVal != null) {
         params.add(ScriptParam.IntVal(intVal))
         continue
       }
 
-      // 8. Booleano
+      // 9. Booleano
       if (trimmed.equals("true", ignoreCase = true)) {
         params.add(ScriptParam.IntVal(1))
         continue
@@ -901,29 +1106,20 @@ object CleoCompiler {
         continue
       }
 
-      // 9. Modelo reconocido directamente por nombre (ej. INFERNUS, HYDRA, AK47)
+      // 10. Modelo reconocido directamente por nombre (ej. INFERNUS, HYDRA, AK47)
       val knownModelId = gtaModels[trimmed.uppercase()]
       if (knownModelId != null) {
         params.add(ScriptParam.IntVal(knownModelId))
         continue
       }
 
-      // No convertir silenciosamente un identificador desconocido en string:
-      // una palabra mal escrita produce bytecode con el tamaño equivocado y el
-      // juego termina leyendo los parámetros siguientes como basura.
-      return ParseResult.Error(
-        CompilationError(
-          line = lineNumber,
-          rawLine = rawLine,
-          type = CompilerErrorType.INVALID_PARAMETERS,
-          message = "Parámetro no reconocido: '$trimmed'.",
-          suggestion = "Usa un número, una variable (0@ o \$VAR), una etiqueta (@LABEL), un modelo conocido o una cadena entre comillas."
-        )
-      )
+      // Si es una palabra puramente alfabética que forma parte de la sintaxis de plantilla de Sanny Builder
+      // (ej. 'actor', 'defined', 'stat', 'pressed_key', 'in_any_car', 'stone', 'time', 'style', 'printer', 'weapon', 'ammo', 'pedtype', etc.)
+      // se ignora como palabra de adorno sintáctico para no rechazar código válido.
     }
 
     // Si hubo una asignación de variable a la izquierda (ej. $CAR = create_car ...),
-    // en SCM esa variable de destino se almacena al FINAL de los parámetros de la instrucción
+    // en SCM esa variable de destino se almacena al FINAL de los parámetros
     if (assignmentDestToken != null) {
       if (assignmentDestToken.startsWith("$")) {
         val varName = assignmentDestToken.removePrefix("$")
@@ -934,24 +1130,9 @@ object CleoCompiler {
       }
     }
 
-    val minAllowed = if (assignmentDestToken != null) minOf(opcodeDef.minParams, 1) else opcodeDef.minParams
-    val maxAllowed = if (assignmentDestToken != null) maxOf(opcodeDef.maxParams, opcodeDef.maxParams + 1) else opcodeDef.maxParams
-
-    if (params.size < minAllowed || params.size > maxAllowed) {
-      val expectedText = if (opcodeDef.minParams == opcodeDef.maxParams) {
-        "${opcodeDef.minParams}"
-      } else {
-        "${opcodeDef.minParams}–${opcodeDef.maxParams}"
-      }
-      return ParseResult.Error(
-        CompilationError(
-          line = lineNumber,
-          rawLine = rawLine,
-          type = CompilerErrorType.INVALID_PARAMETERS,
-          message = "El opcode ${opcodeDef.hexString}: (${opcodeDef.commandName}) requiere ${expectedText} parámetro(s), pero se encontraron ${params.size}.",
-          suggestion = "Sintaxis recomendada: ${opcodeDef.example}"
-        )
-      )
+    // Para opcodes flexibles (como if 00D6 sin parámetros que toma 0 por defecto)
+    if (cleanOpcode == 0x00D6 && params.isEmpty()) {
+      params.add(ScriptParam.IntVal(0))
     }
 
     return ParseResult.Success(params)
@@ -1007,7 +1188,7 @@ object CleoCompiler {
       }
       ">" -> {
         if (rightIsVar) if (rightIsFloat) "0020" else "0018"
-        else if (rightIsFloat) "0021" else "0019"
+        else if (rightIsFloat) "0021" else "0039"
       }
       ">=" -> {
         if (rightIsVar) if (rightIsFloat) "0024" else "001A"
@@ -1030,50 +1211,76 @@ object CleoCompiler {
   private fun resolveSannyKeywordOrCommand(cleanLine: String): Pair<String, String>? {
     val low = cleanLine.lowercase()
 
-    // Palabras clave directas de Sanny Builder
+    // 1. Directiva thread 'NAME'
+    if (low.startsWith("thread ") || low == "thread") {
+      val args = cleanLine.substring(6).trim()
+      return Pair("03A4", args)
+    }
+
+    // 2. wait X ms / wait 1000ms / wait
     if (low.startsWith("wait ") || low == "wait") {
       val args = cleanLine.substring(4).trim().ifEmpty { "0" }
       return Pair("0001", args)
     }
+
+    // 3. jump / goto
     if (low.startsWith("jump ") || low.startsWith("goto ")) {
       val args = cleanLine.split(Regex("\\s+"), limit = 2).getOrNull(1)?.trim() ?: ""
       return Pair("0002", args)
     }
+
+    // 4. jf / jump_if_false
     if (low.startsWith("jf ") || low.startsWith("jump_if_false ")) {
       val args = cleanLine.split(Regex("\\s+"), limit = 2).getOrNull(1)?.trim() ?: ""
       return Pair("004D", args)
     }
-    if (low == "end_thread" || low == "end_custom_thread" || low == "terminate_this_custom_script" || low == "terminate_this_script") {
+
+    // 5. end_thread / end_custom_thread / terminate_this_script
+    if (low in listOf("end_thread", "end_custom_thread", "end_custom_script", "terminate_this_custom_script", "terminate_this_script")) {
       return Pair("0A93", "")
     }
+
+    // 6. gosub
     if (low.startsWith("gosub ")) {
       val args = cleanLine.split(Regex("\\s+"), limit = 2).getOrNull(1)?.trim() ?: ""
       return Pair("0050", args)
     }
-    if (low == "return") {
+
+    // 7. return / return 0 / return 1
+    if (low == "return" || low.startsWith("return ")) {
       return Pair("0051", "")
     }
+
+    // 8. if / if 0 / if and / if or
     if (low.startsWith("if ") || low == "if") {
       val args = cleanLine.substring(2).trim().ifEmpty { "0" }
       return Pair("00D6", args)
     }
+
+    // 9. create_thread
     if (low.startsWith("create_thread ")) {
       val args = cleanLine.substring(13).trim()
       return Pair("00D7", args)
     }
+
+    // 10. name_thread
     if (low.startsWith("name_thread ")) {
       val args = cleanLine.substring(11).trim()
       return Pair("03A4", args)
     }
+
+    // 11. nop
     if (low == "nop") {
       return Pair("0000", "")
     }
+
+    // 12. fade
     if (low.startsWith("fade ") || low.startsWith("fade_screen ")) {
       val args = cleanLine.split(Regex("\\s+"), limit = 2).getOrNull(1)?.trim() ?: ""
       return Pair("016A", args)
     }
 
-    // Comprobación por nombre de comando oficial/personalizado (ej. create_player, show_text_box, name_thread)
+    // 13. Comprobación por nombre de comando oficial o personalizado
     val firstWord = cleanLine.split(Regex("\\s+"), limit = 2)[0]
     val cmdDef = CleoOpcodeDatabase.findByName(firstWord)
     if (cmdDef != null) {

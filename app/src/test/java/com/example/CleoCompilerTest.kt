@@ -478,4 +478,102 @@ class CleoCompilerTest {
     val success = result as CompilationResult.Success
     assertEquals(8, success.opcodesCompiled)
   }
+
+  @Test
+  fun `compiles script with Sanny Builder thread directive and wait with ms suffix`() {
+    val script = """
+      {${'$'}CLEO .csa}
+      // Nombre del hilo
+      thread 'CARMONEY'
+
+      :CARMONEY_MAIN
+      wait 1000ms
+      004E: end_thread
+    """.trimIndent()
+
+    val result = CleoCompiler.compile(script)
+    assertTrue("Debe compilar thread y wait 1000ms: $result", result is CompilationResult.Success)
+    val success = result as CompilationResult.Success
+    assertEquals(3, success.opcodesCompiled)
+  }
+
+  @Test
+  fun `compiles structured if then else end with OOP Player Defined`() {
+    val script = """
+      {${'$'}CLEO .csa}
+      :START
+      wait 500
+
+      if
+        Player.Defined(0)
+      then
+        0109: player ${'$'}PLAYER_CHAR add_money 50000
+      else
+        wait 100
+      end
+      end_thread
+    """.trimIndent()
+
+    val result = CleoCompiler.compile(script)
+    assertTrue("Debe compilar if..then..else..end con Player.Defined(0): $result", result is CompilationResult.Success)
+  }
+
+  @Test
+  fun `compiles opcodes with syntactic sugar keywords like defined stat pressed_key style in_any_car`() {
+    val script = """
+      {${'$'}CLEO .csa}
+      0000: NOP
+      :LOOP
+      wait 100
+      056D: actor 30@ defined
+      00E1: player 0 pressed_key 17
+      0652: 1@ = player ${'$'}PLAYER_CHAR stat 121
+      045A: print_with_number_now 1@ time 150 style 1
+      0205: actor 0@ in_any_car
+      0AB0: key_pressed 18
+      0058: 0@ += 5.0
+      2@ = 2@ + 15.0
+      end_thread
+    """.trimIndent()
+
+    val result = CleoCompiler.compile(script)
+    assertTrue("Debe compilar opcodes con palabras decorativas: $result", result is CompilationResult.Success)
+  }
+
+  @Test
+  fun `compiles script with block comments and curly braces tags`() {
+    val script = """
+      {${'$'}CLEO .csa}
+      :INICIO
+      wait 3000
+      03F0: set_text_font 2
+      {TEXT: Mod cargado correctamente}
+      wait 2000
+      end_custom_script
+    """.trimIndent()
+
+    val result = CleoCompiler.compile(script)
+    assertTrue("Debe compilar comentarios entre llaves {TEXT}: $result", result is CompilationResult.Success)
+  }
+
+  @Test
+  fun `compiles Actor Driving and Sanny Builder comparison math`() {
+    val script = """
+      {${'$'}CLEO .csa}
+      :MAIN
+      wait 100 ms
+      actor.Driving(${'$'}PLAYER_ACTOR)
+      004D: jump_if_false @MAIN
+      0@ = 0
+      0@ += 1
+      0@ >= 60
+      0@ < 400
+      0@ > 4
+      end_thread
+    """.trimIndent()
+
+    val result = CleoCompiler.compile(script)
+    assertTrue("Debe compilar Actor.Driving y comparaciones matemáticas: $result", result is CompilationResult.Success)
+  }
 }
+

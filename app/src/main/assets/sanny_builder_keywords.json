@@ -1,0 +1,43 @@
+{
+  "keywords": [
+    { "word": "thread", "opcode": "03A4", "desc": "Define el nombre del hilo del script", "syntax": "thread 'NOMBRE'" },
+    { "word": "wait", "opcode": "0001", "desc": "Pausa la ejecución del script por X milisegundos", "syntax": "wait 0 ms" },
+    { "word": "jump", "opcode": "0002", "desc": "Salto incondicional a una etiqueta", "syntax": "jump @LABEL" },
+    { "word": "goto", "opcode": "0002", "desc": "Salto incondicional a una etiqueta (alias de jump)", "syntax": "goto @LABEL" },
+    { "word": "jf", "opcode": "004D", "desc": "Salto condicional si la última condición fue falsa", "syntax": "jf @LABEL" },
+    { "word": "jump_if_false", "opcode": "004D", "desc": "Salto condicional si la última condición fue falsa", "syntax": "jump_if_false @LABEL" },
+    { "word": "gosub", "opcode": "0050", "desc": "Llama a una subrutina", "syntax": "gosub @LABEL" },
+    { "word": "return", "opcode": "0051", "desc": "Regresa de una subrutina", "syntax": "return" },
+    { "word": "end_thread", "opcode": "0A93", "desc": "Finaliza el hilo CLEO de forma segura", "syntax": "end_thread" },
+    { "word": "end_custom_thread", "opcode": "0A93", "desc": "Finaliza el hilo CLEO de forma segura", "syntax": "end_custom_thread" },
+    { "word": "end_custom_script", "opcode": "0A93", "desc": "Finaliza el hilo CLEO de forma segura", "syntax": "end_custom_script" },
+    { "word": "terminate_this_script", "opcode": "0A93", "desc": "Finaliza el hilo CLEO de forma segura", "syntax": "terminate_this_script" },
+    { "word": "terminate_this_custom_script", "opcode": "0A93", "desc": "Finaliza el hilo CLEO de forma segura", "syntax": "terminate_this_custom_script" },
+    { "word": "nop", "opcode": "0000", "desc": "Instrucción nula (No Operation)", "syntax": "nop" },
+    { "word": "fade", "opcode": "0169", "desc": "Efecto de fundido de pantalla", "syntax": "fade 0 500" },
+    { "word": "fade_screen", "opcode": "016A", "desc": "Comprueba fin de fundido", "syntax": "fade_screen" }
+  ],
+  "control_structures": [
+    "if", "then", "else", "end", "while", "repeat", "until", "and", "or", "not"
+  ],
+  "oop_methods": [
+    { "pattern": "Player\\.Defined\\((.+)\\)", "opcode": "0256", "params": ["$1"], "desc": "Verifica si el jugador está instanciado" },
+    { "pattern": "Actor\\.Driving\\((.+)\\)", "opcode": "00DF", "params": ["$1"], "desc": "Verifica si el actor conduce un vehículo" },
+    { "pattern": "Actor\\.Dead\\((.+)\\)", "opcode": "0118", "params": ["$1"], "desc": "Verifica si el actor ha muerto" },
+    { "pattern": "Actor\\.Defined\\((.+)\\)", "opcode": "056D", "params": ["$1"], "desc": "Verifica si el actor existe" },
+    { "pattern": "Actor\\.StorePos\\((.+?),\\s*(.+?),\\s*(.+?),\\s*(.+?)\\)", "opcode": "04C4", "params": ["$1", "$2", "$3", "$4"], "desc": "Guarda la posición del actor en 3 variables" },
+    { "pattern": "Actor\\.Angle\\((.+)\\)", "opcode": "02E0", "params": ["$1"], "desc": "Obtiene la orientación del actor" },
+    { "pattern": "Car\\.Dead\\((.+)\\)", "opcode": "0119", "params": ["$1"], "desc": "Verifica si el vehículo está destruido" },
+    { "pattern": "Car\\.StorePos\\((.+?),\\s*(.+?),\\s*(.+?),\\s*(.+?)\\)", "opcode": "00AA", "params": ["$1", "$2", "$3", "$4"], "desc": "Guarda la posición del vehículo" },
+    { "pattern": "Car\\.Speed\\((.+)\\)", "opcode": "0441", "params": ["$1"], "desc": "Obtiene la velocidad del vehículo" },
+    { "pattern": "Camera\\.Restore", "opcode": "015F", "params": [], "desc": "Restaura la cámara detrás del jugador" },
+    { "pattern": "Camera\\.SetPosition\\((.+?),\\s*(.+?),\\s*(.+?),\\s*(.+?),\\s*(.+?),\\s*(.+?)\\)", "opcode": "015D", "params": ["$1", "$2", "$3", "$4", "$5", "$6"], "desc": "Establece posición de cámara" }
+  ],
+  "gta_variables": {
+    "PLAYER_CHAR": 8,
+    "PLAYER_ACTOR": 12,
+    "PLAYER_PED": 12,
+    "PLAYER_GROUP": 16,
+    "ONMISSION": 128
+  }
+}
