@@ -378,7 +378,7 @@ object CleoCompiler {
                     )
                   )
                 }
-                // En CLEO GTA SA, los saltos relativos son negativos (-targetOffset)
+                // En CLEO GTA SA, los saltos relativos dentro del hilo son negativos (-targetOffset)
                 val relativeOffset = -targetOffset
                 outputStream.write(0x01) // Tipo Int32
                 val buf = ByteBuffer.allocate(4).order(ByteOrder.LITTLE_ENDIAN).putInt(relativeOffset)
@@ -386,9 +386,9 @@ object CleoCompiler {
               }
 
               is ScriptParam.LocalVar -> {
-                outputStream.write(0x03) // Tipo LOCAL_VAR
-                val offsetBytes = (param.index * 4).toShort()
-                val buf = ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(offsetBytes)
+                outputStream.write(0x03) // Tipo LOCAL_VAR (0x03)
+                // En Sanny Builder y GTA SA SCM, el índice de la variable local es 0..31 (Short)
+                val buf = ByteBuffer.allocate(2).order(ByteOrder.LITTLE_ENDIAN).putShort(param.index.toShort())
                 outputStream.write(buf.array())
               }
 
